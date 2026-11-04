@@ -1,0 +1,89 @@
+name: Elysian Horizon LC Watcher
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Discord invite
+        id: check
+        run: |
+          response=$(curl -sS -o /tmp/invite.json -w "%{http_code}" \
+            "https://discord.com/api/v10/invites/elysianhorizon?with_counts=true")
+
+          echo "HTTP status: $response"
+
+          if [ "$response" != "200" ]; then
+            echo "Discord API returned an unexpected status."
+            cat /tmp/invite.json
+            exit 1
+          fi
+
+          paused=$(jq -r '
+            ((.guild.features // []) | index("INVITES_DISABLED")) != null
+          ' /tmp/invite.json)
+
+          if [ "$paused" = "true" ]; then
+            echo "STATUS=CLOSED" >> "$GITHUB_OUTPUT"
+            echo "LC is currently CLOSED."
+          else
+            echo "STATUS=OPEN" >> "$GITHUB_OUTPUT"
+            echo "LC is currently OPEN!"
+          fi
+
+      - name: Initialize state
+        run: |
+          if [ -f state.txt ]; then
+            echo "Previous state: $(cat state.txt)"
+          else
+            echo "CLOSED" > state.txt
+            echo "No previous state found. Starting from CLOSED."
+          fi
+
+      - name: Notify Discord when LC opens
+        if: steps.check.outputs.STATUS == 'OPEN'
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          previous=$(cat state.txt)
+
+          if [ "$previous" != "OPEN" ]; then
+            curl -sS -H "Content-Type: application/json" \
+              -d '{"content":"🚨 **Elysian Horizon LC 开门了！！！** 🚨\n\n赶紧去！🏃💨\nhttps://discord.gg/elysianhorizon"}' \
+              "$WEBHOOK"
+
+            echo "OPEN" > state.txt
+            echo "Sent opening notification!"
+          else
+            echo "LC is still OPEN. No duplicate notification."
+          fi
+
+      - name: Save closed state
+        if: steps.check.outputs.STATUS == 'CLOSED'
+        run: |
+          echo "CLOSED" > state.txt
+
+      - name: Save state
+        run: |
+          git config user.name "LC Watcher"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add state.txt
+
+          if git diff --cached --quiet; then
+            echo "State has not changed."
+          else
+            git commit -m "Update LC state"
+            git push
+          fi
